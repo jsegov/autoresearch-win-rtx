@@ -126,7 +126,9 @@ def _resolve_gpu_profile(gpu_name, capability, gpu_vram_gb, is_windows):
     min_vram_gb = MIN_SUPPORTED_VRAM_GB_BY_ARCH.get(arch, float("inf"))
     is_rtx = "rtx" in name
     is_laptop = "laptop" in name
-    supported_consumer = is_rtx and not is_laptop and arch is not None and gpu_vram_gb >= min_vram_gb
+    # Allow 0.05 GB tolerance for VRAM floor — WSL2 reserves ~330 KB causing reported
+    # VRAM to fall just below the nominal GB boundary (e.g. 7.9997 GB instead of 8.0 GB).
+    supported_consumer = is_rtx and not is_laptop and arch is not None and gpu_vram_gb >= (min_vram_gb - 0.05)
 
     if supported_consumer:
         if arch == "turing" and gpu_vram_gb < 12.0:
@@ -188,7 +190,7 @@ def _compatibility_warning(gpu_name, capability, gpu_vram_gb):
     if arch is None:
         return f"compute capability {capability[0]}.{capability[1]} is outside supported consumer tiers"
     min_vram_gb = MIN_SUPPORTED_VRAM_GB_BY_ARCH.get(arch, float("inf"))
-    if gpu_vram_gb < min_vram_gb:
+    if gpu_vram_gb < (min_vram_gb - 0.05):
         return f"{gpu_vram_gb:.1f} GB VRAM is below the {min_vram_gb:g} GB floor for {arch}"
     return None
 
@@ -645,13 +647,15 @@ polar_express_coeffs = [
 
 def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_t, eps_t, wd_t):
     p.mul_(1 - lr_t * wd_t)
-    exp_avg.lerp_(grad, 1 - beta1_t)
-    exp_avg_sq.lerp_(grad.square(), 1 - beta2_t)
+    # Cast grad to moment dtype (float32 when p is float16 — prevents grad.square() underflow)
+    g = grad.to(exp_avg.dtype)
+    exp_avg.lerp_(g, 1 - beta1_t)
+    exp_avg_sq.lerp_(g.square(), 1 - beta2_t)
     bias1 = 1 - beta1_t ** step_t
     bias2 = 1 - beta2_t ** step_t
     denom = (exp_avg_sq / bias2).sqrt() + eps_t
     step_size = lr_t / bias1
-    p.add_(exp_avg / denom, alpha=-step_size)
+    p.add_((exp_avg / denom * (-step_size)).to(p.dtype))
 
 
 def muon_step_fused(stacked_grads, stacked_params, momentum_buffer, second_momentum_buffer,
@@ -717,8 +721,11 @@ class MuonAdamW(torch.optim.Optimizer):
             state = self.state[p]
             if not state:
                 state["step"] = 0
-                state["exp_avg"] = torch.zeros_like(p)
-                state["exp_avg_sq"] = torch.zeros_like(p)
+                # Store moments in float32 for float16 params to prevent grad.square()
+                # underflow (float16 min normal ~6.1e-5; tiny embedding grads → 0²=0 → NaN denom)
+                moment_dtype = torch.float32 if p.dtype == torch.float16 else p.dtype
+                state["exp_avg"] = torch.zeros_like(p, dtype=moment_dtype)
+                state["exp_avg_sq"] = torch.zeros_like(p, dtype=moment_dtype)
             state["step"] += 1
             self._adamw_step_t.fill_(state["step"])
             self._adamw_lr_t.fill_(group["lr"])
@@ -1026,7 +1033,9 @@ def _configure_step_kernels(runtime):
     global ADAMW_STEP_IMPL, MUON_STEP_IMPL, USE_COMPILE, MUON_COMPUTE_DTYPE
     ADAMW_STEP_IMPL = adamw_step_fused
     MUON_STEP_IMPL = muon_step_fused
-    MUON_COMPUTE_DTYPE = runtime.amp_dtype
+    # Newton-Schulz iterations in Muon overflow float16 (max ~65504); bfloat16 has the
+    # same exponent range as float32 (~3.4e38) and is safe on all supported architectures.
+    MUON_COMPUTE_DTYPE = torch.bfloat16 if runtime.amp_dtype == torch.float16 else runtime.amp_dtype
     USE_COMPILE = False
 
 
