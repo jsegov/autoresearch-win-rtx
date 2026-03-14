@@ -27,10 +27,10 @@ import torch
 # Constants (fixed, do not modify)
 # ---------------------------------------------------------------------------
 
-MAX_SEQ_LEN = 2048          # context length
-TIME_BUDGET = 300           # training time budget in seconds (5 minutes)
-EVAL_TOKENS = 40 * 524288   # number of tokens for validation eval
-VOCAB_SIZE = 8192
+MAX_SEQ_LEN = 2048  # context length
+TIME_BUDGET = 900  # training time budget in seconds (15 minutes)
+EVAL_TOKENS = 40 * 524288  # number of tokens for validation eval
+VOCAB_SIZE = 16384
 
 # BPE split pattern (GPT-4 style, with \p{N}{1,2} instead of {1,3})
 SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,2}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
@@ -86,7 +86,9 @@ def _normalize_dataset_name(dataset_name):
         return None
     value = dataset_name.strip().lower()
     if value not in DATASET_CHOICES:
-        raise ValueError(f"Unknown dataset '{dataset_name}'. Expected one of {DATASET_CHOICES}.")
+        raise ValueError(
+            f"Unknown dataset '{dataset_name}'. Expected one of {DATASET_CHOICES}."
+        )
     return value
 
 
@@ -224,13 +226,15 @@ def download_data(dataset_name):
 # Tokenizer training
 # ---------------------------------------------------------------------------
 
+
 def list_parquet_files(dataset_name=None):
     dataset = _resolve_dataset_name(dataset_name)
     data_dir = _data_dir(dataset)
     files = []
     if os.path.exists(data_dir):
         files = sorted(
-            name for name in os.listdir(data_dir)
+            name
+            for name in os.listdir(data_dir)
             if name.endswith(".parquet") and not name.endswith(".tmp")
         )
     if files:
@@ -352,6 +356,7 @@ def train_tokenizer(dataset_name=None):
 # Runtime utilities (imported by train.py)
 # ---------------------------------------------------------------------------
 
+
 class Tokenizer:
     """Minimal tokenizer wrapper. Training is handled above."""
 
@@ -363,7 +368,9 @@ class Tokenizer:
     @classmethod
     def from_directory(cls, tokenizer_dir=None, dataset=None):
         dataset_name = _resolve_dataset_name(dataset)
-        resolved_dir = tokenizer_dir if tokenizer_dir is not None else _tokenizer_dir(dataset_name)
+        resolved_dir = (
+            tokenizer_dir if tokenizer_dir is not None else _tokenizer_dir(dataset_name)
+        )
         with open(os.path.join(resolved_dir, "tokenizer.pkl"), "rb") as f:
             enc = pickle.load(f)
         return cls(enc, dataset=dataset_name)
@@ -375,8 +382,13 @@ class Tokenizer:
         return self.bos_token_id
 
     def encode(self, text, prepend=None, num_threads=8):
+        prepend_id = None
         if prepend is not None:
-            prepend_id = prepend if isinstance(prepend, int) else self.enc.encode_single_token(prepend)
+            prepend_id = (
+                prepend
+                if isinstance(prepend, int)
+                else self.enc.encode_single_token(prepend)
+            )
         if isinstance(text, str):
             ids = self.enc.encode_ordinary(text)
             if prepend is not None:
@@ -418,7 +430,9 @@ def _document_batches(split, dataset=None, tokenizer_batch_size=128):
         epoch += 1
 
 
-def make_dataloader(tokenizer, B, T, split, device="cuda", dataset=None, buffer_size=1000):
+def make_dataloader(
+    tokenizer, B, T, split, device="cuda", dataset=None, buffer_size=1000
+):
     """
     BOS-aligned dataloader with best-fit packing.
     Every row starts with BOS. Documents packed using best-fit to minimize cropping.
@@ -446,13 +460,13 @@ def make_dataloader(tokenizer, B, T, split, device="cuda", dataset=None, buffer_
 
     row_buffer = torch.empty((B, row_capacity), dtype=torch.long)
     cpu_buffer = torch.empty(2 * B * T, dtype=torch.long, pin_memory=use_cuda)
-    cpu_inputs = cpu_buffer[:B * T].view(B, T)
-    cpu_targets = cpu_buffer[B * T:].view(B, T)
+    cpu_inputs = cpu_buffer[: B * T].view(B, T)
+    cpu_targets = cpu_buffer[B * T :].view(B, T)
 
     if use_cuda:
         gpu_buffer = torch.empty(2 * B * T, dtype=torch.long, device=resolved_device)
-        inputs = gpu_buffer[:B * T].view(B, T)
-        targets = gpu_buffer[B * T:].view(B, T)
+        inputs = gpu_buffer[: B * T].view(B, T)
+        targets = gpu_buffer[B * T :].view(B, T)
     else:
         gpu_buffer = None
         inputs = cpu_inputs
@@ -477,12 +491,18 @@ def make_dataloader(tokenizer, B, T, split, device="cuda", dataset=None, buffer_
 
                 if best_idx >= 0:
                     doc = doc_buffer.pop(best_idx)
-                    row_buffer[row_idx, pos:pos + len(doc)] = torch.as_tensor(doc, dtype=torch.long)
+                    row_buffer[row_idx, pos : pos + len(doc)] = torch.as_tensor(
+                        doc, dtype=torch.long
+                    )
                     pos += len(doc)
                 else:
-                    shortest_idx = min(range(len(doc_buffer)), key=lambda i: len(doc_buffer[i]))
+                    shortest_idx = min(
+                        range(len(doc_buffer)), key=lambda i: len(doc_buffer[i])
+                    )
                     doc = doc_buffer.pop(shortest_idx)
-                    row_buffer[row_idx, pos:pos + remaining] = torch.as_tensor(doc[:remaining], dtype=torch.long)
+                    row_buffer[row_idx, pos : pos + remaining] = torch.as_tensor(
+                        doc[:remaining], dtype=torch.long
+                    )
                     pos += remaining
 
         cpu_inputs.copy_(row_buffer[:, :-1])
@@ -496,8 +516,11 @@ def make_dataloader(tokenizer, B, T, split, device="cuda", dataset=None, buffer_
 # Evaluation (DO NOT CHANGE METRIC DEFINITION)
 # ---------------------------------------------------------------------------
 
+
 @torch.no_grad()
-def evaluate_bpb(model, tokenizer, batch_size, device="cuda", dataset=None, eval_tokens=EVAL_TOKENS):
+def evaluate_bpb(
+    model, tokenizer, batch_size, device="cuda", dataset=None, eval_tokens=EVAL_TOKENS
+):
     """
     Bits per byte (BPB): vocab size-independent evaluation metric.
     Sums per-token cross-entropy (in nats), sums target byte lengths,
@@ -535,7 +558,9 @@ def evaluate_bpb(model, tokenizer, batch_size, device="cuda", dataset=None, eval
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare data and tokenizer for autoresearch")
+    parser = argparse.ArgumentParser(
+        description="Prepare data and tokenizer for autoresearch"
+    )
     parser.add_argument(
         "--dataset",
         choices=DATASET_CHOICES,
