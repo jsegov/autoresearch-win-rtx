@@ -2,6 +2,8 @@
 
 This is an experiment to have the LLM do its own research.
 
+This branch runs on Windows 11 with an Intel Arc B580 through PyTorch `xpu`. The immediate objective is productive autonomous experimentation on this machine, not backend-portability work.
+
 ## Setup
 
 To set up a new experiment, work with the user to:
@@ -12,7 +14,7 @@ To set up a new experiment, work with the user to:
    - `README.md` — repository context.
    - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
    - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
+4. **Verify data exists**: Check that the autoresearch cache contains the TinyStories data and tokenizer. If not, tell the human to run `.venv\Scripts\python.exe prepare.py`.
 5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
 6. **Confirm and go**: Confirm setup looks good.
 
@@ -20,7 +22,20 @@ Once you get confirmation, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). On this branch you launch it as: `.venv\Scripts\python.exe train.py`.
+
+## B580 baseline
+
+Treat this as the current known-good Arc B580 baseline:
+
+- backend: `xpu`
+- train batch size: `2`
+- eval batch size: `1`
+- sequence length: `512`
+- depth: `6`
+- total batch size target: `16384`
+
+This baseline has completed repeated full 300-second runs on the Intel Arc B580. The agent's job is to improve on this baseline without sacrificing run completion.
 
 **What you CAN do:**
 - Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
@@ -30,9 +45,18 @@ Each experiment runs on a single GPU. The training script runs for a **fixed tim
 - Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
 - Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
 
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
+**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time beyond finishing the run. Everything is fair game inside `train.py`, but completion of the full run is a hard requirement.
 
 **VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
+
+**Stability gate**: A change only counts if `train.py` completes the full 300-second training budget and eval on `xpu`. A smoke-test pass is not enough. Any change that reintroduces OOMs, device-loss issues, or train/eval failures is a failed experiment.
+
+**Search policy for this machine**:
+- Start from the stable Arc B580 baseline and make small, reviewable changes.
+- Favor optimizer, schedule, normalization, attention, and lightweight architecture changes first.
+- Treat larger context lengths, larger model sizes, higher total batch targets, or more aggressive eval settings as high-risk moves.
+- If you explore a high-risk move, do it intentionally and be ready to revert quickly if the full run becomes unstable.
+- Do not spend many experiments rediscovering known-bad pressure points on this B580 tier.
 
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
 
@@ -96,7 +120,7 @@ LOOP FOREVER:
 1. Look at the git state: the current branch/commit we're on
 2. Tune `train.py` with an experimental idea by directly hacking the code.
 3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
+4. Run the experiment: `.venv\Scripts\python.exe train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
 5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
 6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
 7. Record the results in the tsv
