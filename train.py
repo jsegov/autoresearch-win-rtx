@@ -80,7 +80,7 @@ VRAM_FLOOR_TOLERANCE_GB = 0.05
 AUTOTUNE_WARMUP_STEPS = 2
 AUTOTUNE_MEASURE_STEPS = 3
 AUTOTUNE_MAX_MEMORY_FRACTION = 0.90
-AUTOTUNE_CACHE_VERSION = "gpu-profile-v2"
+AUTOTUNE_CACHE_VERSION = "gpu-profile-v3"
 
 
 def _get_gpu_peak_flops(gpu_name):
@@ -89,6 +89,7 @@ def _get_gpu_peak_flops(gpu_name):
         ("5090", 360.0e12),
         ("4090 d", 280.0e12),
         ("4090d", 280.0e12),
+        ("5080 ti", 380.0e12),
         ("4090", 330.3e12),
         ("5080", 280.0e12),
         ("4080 super", 260.0e12),
